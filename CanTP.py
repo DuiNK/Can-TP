@@ -4,6 +4,8 @@ import time
 from ics import ics
 from enum import Enum
  
+Max_buffer = 10000
+
 class FlowStatus(Enum):
     CTS = 0
     WAIT = 1
@@ -88,6 +90,10 @@ class CanTP(can.Listener):
                         break
                     # delay separation time                    
                     time.sleep(self.stMin / 1000)  # Convert ms to seconds
+                if data_index >= can_dl:
+                    data_index = 0
+                    print("All Done")
+                    break
                 self.fs = FlowStatus.WAIT
                 self.wait_to_cts()
  
@@ -121,11 +127,13 @@ class CanTP(can.Listener):
                     data_index += (self.chunk_size - 1)
                     self.sequence_number = (self.sequence_number + 1) % 16
                     # delay separation time
-                    if self.stMin > 0:
-                        time.sleep(self.stMin / 1000)  # Convert ms to seconds
-                time_N_Bs = time.time()
+                    time.sleep(self.stMin / 1000)  # Convert ms to seconds              
+                if data_index >= can_dl:
+                    data_index = 0
+                    print("All Done")
+                    break
                 self.fs == FlowStatus.WAIT
-                self.wait_to_cts(time_N_Bs)
+                self.wait_to_cts()
  
     def stop(self):
         self.running.clear()
@@ -205,12 +213,19 @@ class CanTP(can.Listener):
         self.buffer += frame.data[1:]
         self.cf_flag += (self.chunk_size - 1)
         self.sequence_number = (self.sequence_number + 1) % 16
- 
+        if len(self.buffer) > Max_buffer:
+            time.sleep(0.05)
+            # Send Flow status : OverFlow 
+            fc_frame = can.Message(data=bytes([0x32, self.bs, int(self.stMin * 100)]), is_extended_id=False, is_fd=self.fd, bitrate_switch=self.fd)
+            self.can_bus.send(fc_frame)
+            self.cf_flag = 0
+            print("Over Flow!!!!")
+            print(f"FlowControl: {str(fc_frame)}")
         if len(self.buffer) >= self.expected_length:
             self._message_complete()
         elif (self.cf_flag) % (self.bs * (self.chunk_size - 1)) == 0:
             # Send flow control
-            time.sleep(0.1)
+            time.sleep(0.05)
             fc_frame = can.Message(data=bytes([0x30, self.bs, int(self.stMin * 100)]), is_extended_id=False, is_fd=self.fd, bitrate_switch=self.fd)
             self.can_bus.send(fc_frame)
             self.cf_flag = 0
@@ -240,15 +255,17 @@ class CanTP(can.Listener):
 if __name__ == "__main__":
     can_interface = 'neovi'
     channel = '1'  
-    bitrate = '500000'
+    bitrate = '1000000'
     fd = False
     chunk_size = 8
+    arbitration_id = 000
  
-    can_bus = can.interface.Bus(channel=channel, interface=can_interface, bitrate=bitrate, fd=fd, receive_own_messages= False)
+    can_bus = can.interface.Bus(arbitration_id=arbitration_id, channel=channel, interface=can_interface, bitrate=bitrate, fd=fd, receive_own_messages= False)
  
     cantp = CanTP(can_bus, chunk_size, fd)
     notifier = can.Notifier(can_bus, [cantp])
     
+    # Send
     try:
         while True:
             message = input("Enter message to send (or 'q' to quit): ")
@@ -258,6 +275,13 @@ if __name__ == "__main__":
                 cantp.send(message.encode())
             except Exception as e:
                 print(f"Error sending message: {e}")
+
+    # Receive
+    # try:
+    #     print("Listening for CanTP message")
+    #     while True:
+    #         time.sleep(1)
+    
     except KeyboardInterrupt:
         print("Exiting...")
     finally:
